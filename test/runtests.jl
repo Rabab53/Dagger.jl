@@ -31,6 +31,7 @@ if PROGRAM_FILE != "" && realpath(PROGRAM_FILE) == @__FILE__
     pushfirst!(LOAD_PATH, joinpath(@__DIR__, ".."))
     using Pkg
     Pkg.activate(@__DIR__)
+    Pkg.instantiate()
 
     using ArgParse
     s = ArgParseSettings(description = "Dagger Testsuite")
@@ -115,7 +116,9 @@ finally
         notify(state.halt)
     end
     sleep(1)
-    rmprocs(workers())
+    if nprocs() > 1
+        rmprocs(workers())
+    end
 end
 
 printstyled(stderr, "Tests Completed!\n"; color=:green)

@@ -12,7 +12,7 @@ or `spawn` if it's more convenient:
 
 `Dagger.spawn(f, Dagger.Options(options), args...; kwargs...)`
 
-When called, it creates an [`EagerThunk`](@ref) (also known as a "thunk" or
+When called, it creates an [`DTask`](@ref) (also known as a "thunk" or
 "task") object representing a call to function `f` with the arguments `args` and
 keyword arguments `kwargs`. If it is called with other thunks as args/kwargs,
 such as in `Dagger.@spawn f(Dagger.@spawn g())`, then, in this example, the
@@ -22,9 +22,9 @@ waits on `g()` to complete before executing.
 
 An important observation to make is that, for each argument to
 `@spawn`/`spawn`, if the argument is the result of another `@spawn`/`spawn`
-call (thus it's an [`EagerThunk`](@ref)), the argument will be computed first, and then
+call (thus it's an [`DTask`](@ref)), the argument will be computed first, and then
 its result will be passed into the function receiving the argument. If the
-argument is *not* an [`EagerThunk`](@ref) (instead, some other type of Julia object),
+argument is *not* an [`DTask`](@ref) (instead, some other type of Julia object),
 it'll be passed as-is to the function `f` (with some exceptions).
 
 ## Options
@@ -37,7 +37,7 @@ key-value pairs, which can be any of:
 - `meta::Bool` -- Pass the input [`Chunk`](@ref) objects themselves to `f` and
   not the value contained in them.
 
-There are also some extra optionss that can be passed, although they're considered advanced options to be used only by developers or library authors:
+There are also some extra options that can be passed, although they're considered advanced options to be used only by developers or library authors:
 - `get_result::Bool` -- return the actual result to the scheduler instead of [`Chunk`](@ref) objects. Used when `f` explicitly constructs a [`Chunk`](@ref) or when return value is small (e.g. in case of reduce)
 - `persist::Bool` -- the result of this Thunk should not be released after it becomes unused in the DAG
 - `cache::Bool` -- cache the result of this Thunk such that if the thunk is evaluated again, one can just reuse the cached value. If it’s been removed from cache, recompute the value.
@@ -75,7 +75,7 @@ The final result (from `fetch(s)`) is the obvious consequence of the operation:
 
 Dagger's `@spawn` macro works similarly to `@async` and `Threads.@spawn`: when
 called, it wraps the function call specified by the user in an
-[`EagerThunk`](@ref) object, and immediately places it onto a running scheduler,
+[`DTask`](@ref) object, and immediately places it onto a running scheduler,
 to be executed once its dependencies are fulfilled.
 
 ```julia
@@ -114,7 +114,7 @@ One can also safely call `@spawn` from another worker (not ID 1), and it will be
 
 ```
 x = fetch(Distributed.@spawnat 2 Dagger.@spawn 1+2) # fetches the result of `@spawnat`
-x::EagerThunk
+x::DTask
 @assert fetch(x) == 3 # fetch the result of `@spawn`
 ```
 

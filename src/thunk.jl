@@ -171,8 +171,12 @@ Creates a [`Thunk`](@ref) object which can be executed later, which will call
 `f` with `args` and `kwargs`. `options` controls various properties of the
 resulting `Thunk`.
 """
-function delayed(f, options::Options)
+function _delayed(f, options::Options)
     (args...; kwargs...) -> Thunk(f, args_kwargs_to_pairs(args, kwargs)...; options.options...)
+end
+function delayed(f, options::Options)
+    @warn "`delayed` is deprecated. Use `Dagger.@spawn` or `Dagger.spawn` instead." maxlog=1
+    return _delayed(f, options)
 end
 delayed(f; kwargs...) = delayed(f, Options(;kwargs...))
 
@@ -277,11 +281,151 @@ function Base.showerror(io::IO, ex::ThunkFailedException)
 end
 
 """
-    spawn(f, args...; kwargs...) -> EagerThunk
+    @par [opts] f(args...; kwargs...) -> Thunk
 
-Spawns a task with `f` as the function, `args` as the arguments, and `kwargs`
-as the keyword arguments, returning an `EagerThunk`. Uses a scheduler running
-in the background to execute code.
+Convenience macro to call `Dagger.delayed` on `f` with arguments `args` and
+keyword arguments `kwargs`. May also be called with a series of assignments
+like so:
+
+```julia
+x = @par begin
+    a = f(1,2)
+    b = g(a,3)
+    h(a,b)
+end
+```
+
+`x` will hold the Thunk representing `h(a,b)`; additionally, `a` and `b`
+will be defined in the same local scope and will be equally accessible
+for later calls.
+
+Options to the `Thunk` can be set as `opts` with namedtuple syntax, e.g.
+`single=1`. Multiple options may be provided, and will be applied to all
+generated thunks.
+"""
+macro par(exs...)
+    opts = exs[1:end-1]
+    ex = exs[end]
+    return esc(_par(ex; lazy=true, opts=opts))
+end
+
+"""
+    Dagger.@spawn [option=value]... f(args...; kwargs...) -> DTask
+
+Spawns a Dagger `DTask` that will call `f(args...; kwargs...)`. This `DTask` is like a Julia `Task`, and has many similarities:
+- The `DTask` can be `wait`'d on and `fetch`'d from to see its final result
+- By default, the `DTask` will be automatically run on the first available compute resource
+- If all dependencies are satisfied, the `DTask` will be run as soon as possible
+- The `DTask` may be run in parallel with other `DTask`s, and the scheduler will automatically manage dependencies
+- If a `DTask` throws an exception, it will be propagated to any calls to `fetch`, but not to calls to `wait`
+
+However, the `DTask` also has many key differences from a `Task`:
+- The `DTask` may run on any thread of any Julia process, and even on a remote machine, in your cluster (see `Distributed.addprocs`)
+- The `DTask` might automatically utilize GPUs or other accelerators, if available
+- If arguments to a `DTask` are also `DTask`s, then the scheduler will execute those arguments' `DTask`s first, before running the "downstream" task
+- If an argument to a `DTask` `t2` is a `DTask` `t1`, then the *result* of `t1` (gotten via `fetch(t1)`) will be passed to `t2` (no need for `t2` to call `fetch`!)
+- `DTask`s are generally expected to be defined "functionally", meaning that they should not mutate global state, mutate their arguments, or have side effects
+- `DTask`s are function call-focused, meaning that `Dagger.@spawn` expects a single function call, and not a block of code
+- All `DTask` arguments are expected to be safe to serialize and send to other Julia processes; if not, use the `scope` option or `Dagger.@mutable` to control execution location
+
+Options to the `DTask` can be set before the call to `f` with key-value syntax, e.g.
+`Dagger.@spawn myopt=2 do_something(1, 3.0)`, which would set the option
+`myopt` to `2` for this task. Multiple options may be provided, which are
+specified like `Dagger.@spawn myopt=2 otheropt=4 do_something(1, 3.0)`.
+
+These options control a variety of properties of the resulting `DTask`:
+- `scope`: The execution "scope" of the task, which determines where the task will run. By default, the task will run on the first available compute resource. If you have multiple compute resources, you can specify a scope to run the task on a specific resource. For example, `Dagger.@spawn scope=Dagger.scope(worker=2) do_something(1, 3.0)` would run `do_something(1, 3.0)` on worker 2.
+- `meta`: If `true`, instead of the scheduler automatically fetching values from other tasks, the raw `Chunk` objects will be passed to `f`. Useful for doing manual fetching or manipulation of `Chunk` references. Non-`Chunk` arguments are still passed as-is.
+
+Other options exist; see `Dagger.Sch.ThunkOptions` for the full list.
+
+This macro is a semi-thin wrapper around `Dagger.spawn` - it creates a call to
+`Dagger.spawn` on `f` with arguments `args` and keyword arguments `kwargs`, and
+also passes along any options in an `Options` struct. For example,
+`Dagger.@spawn myopt=2 do_something(1, 3.0)` would essentially become
+`Dagger.spawn(do_something, Dagger.Options(;myopt=2), 1, 3.0)`.
+"""
+macro spawn(exs...)
+    opts = exs[1:end-1]
+    ex = exs[end]
+    return esc(_par(ex; lazy=false, opts=opts))
+end
+
+struct ExpandedBroadcast{F} end
+(eb::ExpandedBroadcast{F})(args...) where F =
+    Base.materialize(Base.broadcasted(F, args...))
+replace_broadcast(ex) = ex
+function replace_broadcast(fn::Symbol)
+    if startswith(string(fn), '.')
+        return :($ExpandedBroadcast{$(Symbol(string(fn)[2:end]))}())
+    end
+    return fn
+end
+
+function _par(ex::Expr; lazy=true, recur=true, opts=())
+    f = nothing
+    body = nothing
+    arg1 = nothing
+    if recur && @capture(ex, f_(allargs__)) || @capture(ex, f_(allargs__) do cargs_ body_ end) || @capture(ex, allargs__->body_) || @capture(ex, arg1_[allargs__])
+        f = replace_broadcast(f)
+        if arg1 !== nothing
+            # Indexing (A[2,3])
+            f = Base.getindex
+            pushfirst!(allargs, arg1)
+        end
+        args = filter(arg->!Meta.isexpr(arg, :parameters), allargs)
+        kwargs = filter(arg->Meta.isexpr(arg, :parameters), allargs)
+        if !isempty(kwargs)
+            kwargs = only(kwargs).args
+        end
+        if body !== nothing
+            if f !== nothing
+                f = quote
+                    ($(args...); $(kwargs...))->$f($(args...); $(kwargs...)) do $cargs
+                        $body
+                    end
+                end
+            else
+                f = quote
+                    ($(args...); $(kwargs...))->begin
+                        $body
+                    end
+                end
+            end
+        end
+        if lazy
+            return :(Dagger.delayed($f, $Options(;$(opts...)))($(args...); $(kwargs...)))
+        else
+            sync_var = Base.sync_varname
+            @gensym result
+            return quote
+                let
+                    $result = $spawn($f, $Options(;$(opts...)), $(args...); $(kwargs...))
+                    if $(Expr(:islocal, sync_var))
+                        put!($sync_var, schedule(Task(()->wait($result))))
+                    end
+                    $result
+                end
+            end
+        end
+    elseif lazy
+        # Recurse into the expression
+        return Expr(ex.head, _par_inner.(ex.args, lazy=lazy, recur=recur, opts=opts)...)
+    else
+        throw(ArgumentError("Invalid Dagger task expression: $ex"))
+    end
+end
+_par(ex; kwargs...) = throw(ArgumentError("Invalid Dagger task expression: $ex"))
+
+_par_inner(ex; kwargs...) = ex
+_par_inner(ex::Expr; kwargs...) = _par(ex; kwargs...)
+
+"""
+    Dagger.spawn(f, args...; kwargs...) -> DTask
+
+Spawns a `DTask` that will call `f(args...; kwargs...)`. Also supports passing a
+`Dagger.Options` struct as the first argument to set task options. See
+`Dagger.@spawn` for more details on `DTask`s.
 """
 function spawn(f, args...; kwargs...)
     @nospecialize f args kwargs
@@ -309,13 +453,13 @@ function spawn(f, args...; kwargs...)
     args_kwargs = args_kwargs_to_pairs(args, kwargs)
 
     # Get task queue, and don't let it propagate
-    task_queue = get_options(:task_queue, EagerTaskQueue())
+    task_queue = get_options(:task_queue, DefaultTaskQueue())
     options = NamedTuple(filter(opt->opt[1] != :task_queue, Base.pairs(options)))
     propagates = filter(prop->prop != :task_queue, propagates)
     options = merge(options, (;propagates))
 
     # Construct task spec and handle
-    spec = EagerTaskSpec(f, args_kwargs, options)
+    spec = DTaskSpec(f, args_kwargs, options)
     task = eager_spawn(spec)
 
     # Enqueue the task into the task queue
@@ -323,95 +467,6 @@ function spawn(f, args...; kwargs...)
 
     return task
 end
-
-"""
-    @par [opts] f(args...; kwargs...) -> Thunk
-
-Convenience macro to call `Dagger.delayed` on `f` with arguments `args` and
-keyword arguments `kwargs`. May also be called with a series of assignments
-like so:
-
-```julia
-x = @par begin
-    a = f(1,2)
-    b = g(a,3)
-    h(a,b)
-end
-```
-
-`x` will hold the Thunk representing `h(a,b)`; additionally, `a` and `b`
-will be defined in the same local scope and will be equally accessible
-for later calls.
-
-Options to the `Thunk` can be set as `opts` with namedtuple syntax, e.g.
-`single=1`. Multiple options may be provided, and will be applied to all
-generated thunks.
-"""
-macro par(exs...)
-    opts = exs[1:end-1]
-    ex = exs[end]
-    _par(ex; lazy=true, opts=opts)
-end
-
-"""
-    @spawn [opts] f(args...) -> Thunk
-
-Convenience macro like `Dagger.@par`, but eagerly executed from the moment it's
-called (equivalent to `spawn`).
-
-See the docs for `@par` for more information and usage examples.
-"""
-macro spawn(exs...)
-    opts = exs[1:end-1]
-    ex = exs[end]
-    _par(ex; lazy=false, opts=opts)
-end
-
-struct ExpandedBroadcast{F} end
-(eb::ExpandedBroadcast{F})(args...) where F =
-    Base.materialize(Base.broadcasted(F, args...))
-replace_broadcast(ex) = ex
-function replace_broadcast(fn::Symbol)
-    if startswith(string(fn), '.')
-        return :($ExpandedBroadcast{$(Symbol(string(fn)[2:end]))}())
-    end
-    return fn
-end
-
-function _par(ex::Expr; lazy=true, recur=true, opts=())
-    if ex.head == :call && recur
-        f = replace_broadcast(ex.args[1])
-        if length(ex.args) >= 2 && Meta.isexpr(ex.args[2], :parameters)
-            args = ex.args[3:end]
-            kwargs = ex.args[2]
-        else
-            args = ex.args[2:end]
-            kwargs = Expr(:parameters)
-        end
-        opts = esc.(opts)
-        args_ex = _par.(args; lazy=lazy, recur=false)
-        kwargs_ex = _par.(kwargs.args; lazy=lazy, recur=false)
-        if lazy
-            return :(Dagger.delayed($(esc(f)), $Options(;$(opts...)))($(args_ex...); $(kwargs_ex...)))
-        else
-            sync_var = esc(Base.sync_varname)
-            @gensym result
-            return quote
-                let args = ($(args_ex...),)
-                    $result = $spawn($(esc(f)), $Options(;$(opts...)), args...; $(kwargs_ex...))
-                    if $(Expr(:islocal, sync_var))
-                        put!($sync_var, schedule(Task(()->wait($result))))
-                    end
-                    $result
-                end
-            end
-        end
-    else
-        return Expr(ex.head, _par.(ex.args, lazy=lazy, recur=recur, opts=opts)...)
-    end
-end
-_par(ex::Symbol; kwargs...) = esc(ex)
-_par(ex; kwargs...) = ex
 
 persist!(t::Thunk) = (t.persist=true; t)
 cache_result!(t::Thunk) = (t.cache=true; t)

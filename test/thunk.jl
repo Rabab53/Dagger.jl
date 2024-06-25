@@ -56,10 +56,10 @@ end
     @testset "per-call" begin
         x = 2
         a = @spawn x + x
-        @test a isa Dagger.EagerThunk
+        @test a isa Dagger.DTask
         b = @spawn sum([x,1,2])
         c = @spawn a * b
-        @test c isa Dagger.EagerThunk
+        @test c isa Dagger.DTask
         @test fetch(a) == 4
         @test fetch(b) == 5
         @test fetch(c) == 20
@@ -78,6 +78,70 @@ end
         A, B = rand(4), rand(4)
         @test fetch(@spawn A .+ B) ≈ A .+ B
         @test fetch(@spawn A .* B) ≈ A .* B
+    end
+    @testset "inner macro" begin
+        A = rand(4)
+        t = @spawn sum(@view A[2:3])
+        @test t isa Dagger.DTask
+        @test fetch(t) ≈ sum(@view A[2:3])
+    end
+    @testset "do block" begin
+        A = rand(4)
+
+        t = @spawn sum(A) do a
+            a + 1
+        end
+        @test t isa Dagger.DTask
+        @test fetch(t) ≈ sum(a->a+1, A)
+
+        t = @spawn sum(A; dims=1) do a
+            a + 1
+        end
+        @test t isa Dagger.DTask
+        @test fetch(t) ≈ sum(a->a+1, A; dims=1)
+
+        do_f = f -> f(42)
+        t = @spawn do_f() do x
+            x + 1
+        end
+        @test t isa Dagger.DTask
+        @test fetch(t) == 43
+    end
+    @testset "anonymous direct call" begin
+        A = rand(4)
+
+        t = @spawn A->sum(A)
+        @test t isa Dagger.DTask
+        @test fetch(t) == sum(A)
+
+        t = @spawn A->sum(A; dims=1)
+        @test t isa Dagger.DTask
+        @test fetch(t) == sum(A; dims=1)
+    end
+    @testset "getindex" begin
+        A = rand(4, 4)
+
+        t = @spawn A[1, 2]
+        @test t isa Dagger.DTask
+        @test fetch(t) == A[1, 2]
+
+        B = Dagger.@spawn rand(4, 4)
+        t = @spawn B[1, 2]
+        @test t isa Dagger.DTask
+        @test fetch(t) == fetch(B)[1, 2]
+
+        R = Ref(42)
+        t = @spawn R[]
+        @test t isa Dagger.DTask
+        @test fetch(t) == 42
+    end
+    @testset "invalid expression" begin
+        @test_throws LoadError eval(:(@spawn 1))
+        @test_throws LoadError eval(:(@spawn begin 1 end))
+        @test_throws LoadError eval(:(@spawn begin
+            1+1
+            1+1
+        end))
     end
     @testset "waiting" begin
         a = @spawn sleep(1)
@@ -176,7 +240,7 @@ end
         a = fetch(Distributed.@spawnat 2 Dagger.@spawn 1+2)
         @test Dagger.Sch.EAGER_INIT[]
         @test fetch(Distributed.@spawnat 2 !(Dagger.Sch.EAGER_INIT[]))
-        @test a isa Dagger.EagerThunk
+        @test a isa Dagger.DTask
         @test fetch(a) == 3
 
         # Mild stress-test

@@ -323,9 +323,6 @@ function init_proc(state, p, log_sink)
     gproc = OSProc(p.pid)
     lock(state.lock) do
         state.worker_time_pressure[p.pid] = Dict{Processor,UInt64}()
-        for proc in get_processors(gproc)
-            state.worker_time_pressure[p.pid][proc] = 0
-        end
 
         state.worker_storage_pressure[p.pid] = Dict{Union{StorageResource,Nothing},UInt64}()
         state.worker_storage_capacity[p.pid] = Dict{Union{StorageResource,Nothing},UInt64}()
@@ -408,7 +405,20 @@ function cleanup_proc(state, p, log_sink)
             delete!(WORKER_MONITOR_CHANS[wid], state.uid)
         end
     end
-    remote_do(_cleanup_proc, wid, state.uid, log_sink)
+
+    # If the worker process is still alive, clean it up
+    if wid in workers()
+        try
+            remotecall_wait(_cleanup_proc, wid, state.uid, log_sink)
+        catch ex
+            # We allow ProcessExitedException's, which means that the worker
+            # shutdown halfway through cleanup.
+            if !(ex isa ProcessExitedException)
+                rethrow()
+            end
+        end
+    end
+
     timespan_finish(ctx, :cleanup_proc, (;worker=wid), nothing)
 end
 
@@ -505,6 +515,11 @@ function scheduler_init(ctx, state::ComputeState, d::Thunk, options, deps)
         end
     end
 
+    # Halt scheduler on Julia exit
+    atexit() do
+        notify(state.halt)
+    end
+
     # Listen for new workers
     @async begin
         try
@@ -572,7 +587,7 @@ function scheduler_run(ctx, state::ComputeState, d::Thunk, options)
                 #state.worker_storage_pressure[pid][to_storage] = metadata.storage_pressure
                 #state.worker_storage_capacity[pid][to_storage] = metadata.storage_capacity
                 state.worker_loadavg[pid] = metadata.loadavg
-                sig = signature(node, state)
+                sig = signature(state, node)
                 state.signature_time_cost[sig] = (metadata.threadtime + get(state.signature_time_cost, sig, 0)) ÷ 2
                 state.signature_alloc_cost[sig] = (metadata.gc_allocd + get(state.signature_alloc_cost, sig, 0)) ÷ 2
                 if metadata.transfer_rate !== nothing
@@ -698,7 +713,7 @@ function schedule!(ctx, state, procs=procs_to_use(ctx))
             @goto pop_task
         end
         opts = merge(ctx.options, task.options)
-        sig = signature(task, state)
+        sig = signature(state, task)
 
         # Calculate scope
         scope = if task.f isa Chunk
@@ -768,7 +783,9 @@ function schedule!(ctx, state, procs=procs_to_use(ctx))
                         Vector{Tuple{Thunk,<:Any,<:Any,UInt64,UInt32}}()
                     end
                     push!(proc_tasks, (task, scope, est_time_util, est_alloc_util, est_occupancy))
-                    state.worker_time_pressure[gproc.pid][proc] += est_time_util
+                    state.worker_time_pressure[gproc.pid][proc] =
+                        get(state.worker_time_pressure[gproc.pid], proc, 0) +
+                        est_time_util
                     @dagdebug task :schedule "Scheduling to $gproc -> $proc"
                     @goto pop_task
                 end

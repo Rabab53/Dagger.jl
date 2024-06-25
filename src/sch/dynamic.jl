@@ -33,9 +33,18 @@ function safepoint(state)
     if state.halt.set
         # Force dynamic thunks and listeners to terminate
         for (inp_chan,out_chan) in values(state.worker_chans)
-            close(inp_chan)
-            close(out_chan)
+            # Closing these channels will fail if the worker died, which we
+            # allow.
+            try
+                close(inp_chan)
+                close(out_chan)
+            catch ex
+                if !(ex isa ProcessExitedException)
+                    rethrow()
+                end
+            end
         end
+
         # Throw out of scheduler
         throw(SchedulerHaltedException())
     end
@@ -224,7 +233,7 @@ function _add_thunk!(ctx, state, task, tid, (f, args, options, future, ref))
             @dagdebug thunk :submit "Registered future"
         end
         if ref !== nothing
-            # Preserve the `EagerThunkFinalizer` through `thunk`
+            # Preserve the `DTaskFinalizer` through `thunk`
             thunk.eager_ref = ref
         end
         state.valid[thunk] = nothing
