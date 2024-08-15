@@ -1,7 +1,21 @@
 using LinearAlgebra, Graphs
 
-empty!(Dagger.DAGDEBUG_CATEGORIES)
-push!(Dagger.DAGDEBUG_CATEGORIES, :spawn_datadeps)
+@testset "Memory Aliasing" begin
+    A = rand(4)
+    a = Dagger.aliasing(A)
+    @test a isa Dagger.ContiguousAliasing
+    @test a.span.ptr.addr == UInt(pointer(A))
+    @test a.span.len == sizeof(Float64) * length(A)
+
+    r = Ref(3)
+    a = Dagger.aliasing(r)
+    @test a isa Dagger.CombinedAliasing
+    @test length(a.sub_ainfos) == 1
+    s = only(a.sub_ainfos)
+    @test s isa Dagger.ObjectAliasing
+    @test s.ptr == pointer_from_objref(r)
+    @test s.sz == sizeof(3)
+end
 
 function with_logs(f)
     Dagger.enable_logging!(;taskdeps=true, taskargs=true)
@@ -396,7 +410,7 @@ function test_datadeps(;args_chunks::Bool,
 
     # Scope
     exec_procs = fetch.(Dagger.spawn_datadeps(;aliasing) do
-        [Dagger.@spawn Dagger.thunk_processor() for i in 1:10]
+        [Dagger.@spawn Dagger.task_processor() for i in 1:10]
     end)
     unique!(exec_procs)
     scope = Dagger.get_options(:scope)
