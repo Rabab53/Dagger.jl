@@ -1,4 +1,4 @@
-<img src="docs/logo.jpg" alt="Dagger.jl">
+<img src="docs/src/assets/logo-with-text.jpg" alt="Dagger.jl">
 
 -----
 
@@ -68,11 +68,18 @@ more examples in the docs, and more use cases examples are welcome (just file
 an issue or PR).
 
 ## Contributing Guide
+
+Please see the roadmap for missing features or known bugs:
+
+[Dagger Features and Roadmap](FEATURES_ROADMAP.md)
+
+Other resources:
+
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
 [![GitHub issues](https://img.shields.io/github/issues/JuliaParallel/Dagger.jl)](https://github.com/JuliaParallel/Dagger.jl/issues)
 [![GitHub contributors](https://img.shields.io/github/contributors/JuliaParallel/Dagger.jl)](https://github.com/JuliaParallel/Dagger.jl/graphs/contributors)
 
-Contributions are encouraged. 
+Contributions are encouraged.
 
 There are several ways to contribute to our project:
 
@@ -83,6 +90,7 @@ There are several ways to contribute to our project:
 Additional examples and documentation improvements are also very welcome.
 
 ## Resources
+
 List of recommended Dagger.jl resources:
 - Docs [![][docs-master-img]][docs-master-url]
 - Videos
@@ -95,6 +103,25 @@ List of recommended Dagger.jl resources:
 For help and discussion, we suggest asking in the following places:
 
 [Julia Discourse](https://discourse.julialang.org/c/domain/parallel/34) and on the [Julia Slack](https://julialang.org/slack/) in the `#dagger` channel.
+
+## References
+```bibtex
+@article{dagger1,
+  title={{{Dynamic Task Scheduling with Data Dependency Awareness Using Julia}},
+  author={Alomairy, Rabab and Tome, Felipe and Samaroo, Julian and Edelman, Alan},
+  pages={1--6},
+  year={2024},
+  publisher={MIT Open Access Articles}
+}
+```
+```bibtex
+@article{dagger2,
+  title={{{Efficient Dynamic Task Scheduling in Heterogeneous Environments with Julia}},
+  author={Samaroo, Julian and Alomairy, Rabab and  and Giordano, Mose and Edelman, Alan},
+  year={2024},
+  publisher={MIT Open Access Articles}
+}
+```
 
 ## Acknowledgements
 

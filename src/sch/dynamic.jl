@@ -54,7 +54,7 @@ end
 function dynamic_listener!(ctx, state, wid)
     task = current_task() # The scheduler's main task
     inp_chan, out_chan = state.worker_chans[wid]
-    listener_task = @async begin
+    listener_task = Threads.@spawn begin
         while !state.halt.set
             tid, f, data = try
                 take!(inp_chan)
@@ -98,11 +98,11 @@ function dynamic_listener!(ctx, state, wid)
         end
     end
     errormonitor_tracked("dynamic_listener! $wid", listener_task)
-    errormonitor_tracked("dynamic_listener! (halt+throw) $wid", @async begin
+    errormonitor_tracked("dynamic_listener! (halt+throw) $wid", Threads.@spawn begin
         wait(state.halt)
-        # TODO: Not sure why we need the @async here, but otherwise we
+        # TODO: Not sure why we need the Threads.@spawn here, but otherwise we
         # don't stop all the listener tasks
-        @async Base.throwto(listener_task, SchedulerHaltedException())
+        Threads.@spawn Base.throwto(listener_task, SchedulerHaltedException())
     end)
 end
 
@@ -132,7 +132,7 @@ end
 function Base.fetch(h::SchedulerHandle, id::ThunkID)
     future = ThunkFuture(Future(1))
     exec!(_register_future!, h, future, id, true)
-    fetch(future; proc=thunk_processor())
+    fetch(future; proc=task_processor())
 end
 """
 Waits on a thunk to complete, and fetches its result. If `check` is set to

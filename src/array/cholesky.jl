@@ -1,8 +1,8 @@
 LinearAlgebra.cholcopy(A::DArray{T,2}) where T = copy(A)
 function potrf_checked!(uplo, A, info_arr)
-    _A, info = move(thunk_processor(), LAPACK.potrf!)(uplo, A)
+    _A, info = move(task_processor(), LAPACK.potrf!)(uplo, A)
     if info != 0
-        info_arr[1] = info
+        fill!(info_arr, info)
         throw(PosDefException(info))
     end
     return _A, info
@@ -22,7 +22,7 @@ function LinearAlgebra._chol!(A::DArray{T,2}, ::Type{UpperTriangular}) where T
 
     info = [convert(LinearAlgebra.BlasInt, 0)]
     try
-        Dagger.spawn_datadeps(;aliasing=true) do
+        Dagger.spawn_datadeps() do
             for k in range(1, mt)
                 Dagger.@spawn potrf_checked!(uplo, InOut(Ac[k, k]), Out(info))
                 for n in range(k+1, nt)
@@ -41,7 +41,7 @@ function LinearAlgebra._chol!(A::DArray{T,2}, ::Type{UpperTriangular}) where T
             end
         end
     catch err
-        err isa ThunkFailedException || rethrow()
+        err isa DTaskFailedException || rethrow()
         err = Dagger.Sch.unwrap_nested_exception(err.ex)
         err isa PosDefException || rethrow()
     end
@@ -82,7 +82,7 @@ function LinearAlgebra._chol!(A::DArray{T,2}, ::Type{LowerTriangular}) where T
             end
         end
     catch err
-        err isa ThunkFailedException || rethrow()
+        err isa DTaskFailedException || rethrow()
         err = Dagger.Sch.unwrap_nested_exception(err.ex)
         err isa PosDefException || rethrow()
     end

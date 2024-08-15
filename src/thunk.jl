@@ -220,22 +220,23 @@ function Base.convert(::Type{ThunkSummary}, t::WeakThunk)
     return t
 end
 
-struct ThunkFailedException{E<:Exception} <: Exception
+struct DTaskFailedException{E<:Exception} <: Exception
     thunk::ThunkSummary
     origin::ThunkSummary
     ex::E
 end
-ThunkFailedException(thunk, origin, ex::E) where E =
-    ThunkFailedException{E}(convert(ThunkSummary, thunk),
+DTaskFailedException(thunk, origin, ex::E) where E =
+    DTaskFailedException{E}(convert(ThunkSummary, thunk),
                             convert(ThunkSummary, origin),
                             ex)
-function Base.showerror(io::IO, ex::ThunkFailedException)
+@deprecate ThunkFailedException DTaskFailedException
+function Base.showerror(io::IO, ex::DTaskFailedException)
     t = ex.thunk
 
     # Find root-cause thunk
     last_tfex = ex
     failed_tasks = Union{ThunkSummary,Nothing}[]
-    while last_tfex.ex isa ThunkFailedException
+    while last_tfex.ex isa DTaskFailedException
         push!(failed_tasks, last_tfex.thunk)
         last_tfex = last_tfex.ex
     end
@@ -246,7 +247,7 @@ function Base.showerror(io::IO, ex::ThunkFailedException)
         Tinputs = Any[]
         for (_, input) in t.inputs
             if istask(input)
-                push!(Tinputs, "Thunk(id=$(input.id))")
+                push!(Tinputs, "DTask(id=$(input.id))")
             else
                 push!(Tinputs, input)
             end
@@ -256,28 +257,28 @@ function Base.showerror(io::IO, ex::ThunkFailedException)
         else
             "$(t.f)($(length(Tinputs)) inputs...)"
         end
-        return "Thunk(id=$(t.id), $t_sig)"
+        return "DTask(id=$(t.id), $t_sig)"
     end
     t_str = thunk_string(t)
     o_str = thunk_string(o)
-    println(io, "ThunkFailedException:")
-    println(io, "  Root Exception Type: $(typeof(root_ex))")
+    println(io, "DTaskFailedException:")
+    println(io, "  Root Exception Type: $(typeof(Sch.unwrap_nested_exception(root_ex)))")
     println(io, "  Root Exception:")
     Base.showerror(io, root_ex); println(io)
     if t.id !== o.id
-        println(io, "  Root Thunk:  $o_str")
+        println(io, "  Root Task:  $o_str")
         if length(failed_tasks) <= 4
             for i in failed_tasks
                 i_str = thunk_string(i)
-                println(io, "  Inner Thunk: $i_str")
+                println(io, "  Inner Task: $i_str")
             end
         else
             println(io, " ...")
-            println(io, "  $(length(failed_tasks)) Inner Thunks...")
+            println(io, "  $(length(failed_tasks)) Inner Tasks...")
             println(io, " ...")
         end
     end
-    print(io, "  This Thunk:  $t_str")
+    print(io, "  This Task:  $t_str")
 end
 
 """
@@ -362,16 +363,34 @@ function replace_broadcast(fn::Symbol)
     return fn
 end
 
+to_namedtuple(;kwargs...) = (;kwargs...)
+
 function _par(ex::Expr; lazy=true, recur=true, opts=())
     f = nothing
     body = nothing
     arg1 = nothing
-    if recur && @capture(ex, f_(allargs__)) || @capture(ex, f_(allargs__) do cargs_ body_ end) || @capture(ex, allargs__->body_) || @capture(ex, arg1_[allargs__])
+    arg2 = nothing
+    if recur && @capture(ex, f_(allargs__)) ||
+                @capture(ex, f_(allargs__) do cargs_ body_ end) ||
+                @capture(ex, allargs__->body_) ||
+                @capture(ex, arg1_[allargs__]) ||
+                @capture(ex, arg1_.arg2_) ||
+                @capture(ex, (;allargs__))
         f = replace_broadcast(f)
         if arg1 !== nothing
-            # Indexing (A[2,3])
-            f = Base.getindex
-            pushfirst!(allargs, arg1)
+            if arg2 !== nothing
+                # Getproperty (A.B)
+                f = Base.getproperty
+                allargs = Any[arg1, QuoteNode(arg2)]
+            else
+                # Indexing (A[2,3])
+                f = Base.getindex
+                pushfirst!(allargs, arg1)
+            end
+        end
+        if f === nothing && body === nothing
+            # NamedTuple ((;a=1, b=2))
+            f = to_namedtuple
         end
         args = filter(arg->!Meta.isexpr(arg, :parameters), allargs)
         kwargs = filter(arg->Meta.isexpr(arg, :parameters), allargs)
@@ -402,7 +421,7 @@ function _par(ex::Expr; lazy=true, recur=true, opts=())
                 let
                     $result = $spawn($f, $Options(;$(opts...)), $(args...); $(kwargs...))
                     if $(Expr(:islocal, sync_var))
-                        put!($sync_var, schedule(Task(()->wait($result))))
+                        put!($sync_var, schedule(Task(()->fetch($result; raw=true))))
                     end
                     $result
                 end
@@ -467,6 +486,20 @@ function spawn(f, args...; kwargs...)
 
     return task
 end
+
+struct FetchAdaptor end
+Adapt.adapt_storage(::FetchAdaptor, x::DTask) = fetch(x)
+Adapt.adapt_structure(::FetchAdaptor, A::AbstractArray) =
+    map(x->Adapt.adapt(FetchAdaptor(), x), A)
+
+"""
+    Dagger.fetch_all(x)
+
+Recursively fetches all `DTask`s and `Chunk`s in `x`, returning an equivalent
+object. Useful for converting arbitrary Dagger-enabled objects into a
+non-Dagger form.
+"""
+fetch_all(x) = Adapt.adapt(FetchAdaptor(), x)
 
 persist!(t::Thunk) = (t.persist=true; t)
 cache_result!(t::Thunk) = (t.cache=true; t)

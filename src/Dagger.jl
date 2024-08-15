@@ -13,6 +13,8 @@ import Distributed: Future, RemoteChannel, myid, workers, nworkers, procs, remot
 
 import LinearAlgebra
 import LinearAlgebra: Adjoint, BLAS, Diagonal, Bidiagonal, Tridiagonal, LAPACK, LowerTriangular, PosDefException, Transpose, UpperTriangular, UnitLowerTriangular, UnitUpperTriangular, diagind, ishermitian, issymmetric
+import Random
+import Random: AbstractRNG
 
 import UUIDs: UUID, uuid4
 
@@ -28,6 +30,8 @@ end
 
 import TimespanLogging
 import TimespanLogging: timespan_start, timespan_finish
+
+import Adapt
 
 include("lib/util.jl")
 include("utils/dagdebug.jl")
@@ -80,6 +84,7 @@ include("array/sort.jl")
 include("array/linalg.jl")
 include("array/mul.jl")
 include("array/cholesky.jl")
+include("array/random.jl")
 
 # Visualization
 include("visualization.jl")
@@ -99,6 +104,9 @@ function __init__()
     system_uuid()
 
     @static if !isdefined(Base, :get_extension)
+        @require Distributions="31c24e10-a181-5473-b8eb-7969acd0382f" begin
+            include(joinpath(dirname(@__DIR__), "ext", "DistributionsExt.jl"))
+        end
         @require Graphs="86223c79-3864-5bf0-83f7-82e725a168b6" begin
             @require GraphViz="f526b714-d49f-11e8-06ff-31ed36ee7ee0" begin
                 include(joinpath(dirname(@__DIR__), "ext", "GraphVizExt.jl"))
@@ -114,6 +122,9 @@ function __init__()
             @require Mux="a975b10e-0019-58db-a62f-e48ff68538c9" begin
                 # Gantt chart HTTP server
                 include("ui/gantt-mux.jl")
+            end
+            @require JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1" begin
+                include(joinpath(dirname(@__DIR__), "ext", "JSON3Ext.jl"))
             end
         end
         # TODO: Move to Pkg extensions

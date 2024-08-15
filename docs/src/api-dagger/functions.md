@@ -30,6 +30,11 @@ mutable
 shard
 ```
 
+## Data Dependencies Functions
+```@docs
+spawn_datadeps
+```
+
 ## Scope Functions
 ```@docs
 scope
@@ -54,13 +59,13 @@ addprocs!
 rmprocs!
 ```
 
-## Thunk Execution Environment Functions
+## DTask Execution Environment Functions
 
-These functions are used within the function called by a `Thunk`.
+These functions are used within the function called by a `DTask`.
 
 ```@docs
-in_thunk
-thunk_processor
+in_task
+task_processor
 ```
 
 ### Dynamic Scheduler Control Functions
